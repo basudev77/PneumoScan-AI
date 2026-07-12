@@ -1,6 +1,13 @@
 """
-PneumoScan AI — v2.0
+PneumoScan AI — v2.1 (8th Semester · Project II · PROJ-AI881 · Project No. 60)
 Clean, professional medical UI with light/dark mode toggle.
+
+7th-sem (Phase I) baseline: custom shallow CNN trained from scratch (120x120 input).
+8th-sem (Phase II, this version): classification backbone upgraded to a
+DenseNet121 transfer-learning model (ImageNet-pretrained, 224x224 input) with
+an expanded/augmented training set. Grad-CAM now reads from DenseNet121's
+final dense-block output (conv5_block16_concat).
+
 Removed: image filters, layer name display, PDF download (broken).
 Added: light/dark toggle, cleaner layout, non-AI-aesthetic design.
 """
@@ -29,7 +36,7 @@ st.set_page_config(
 
 # ── Theme toggle (must come before CSS injection) ──────────
 if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
+    st.session_state.dark_mode = True
 
 # ── CSS ────────────────────────────────────────────────────
 def inject_css(dark: bool):
@@ -74,6 +81,10 @@ def inject_css(dark: bool):
 html, body, [class*="css"] {{
     font-family: 'DM Sans', sans-serif !important;
     color: {text} !important;
+}}
+[data-testid="stAppViewContainer"], [data-testid="stApp"], .main {{
+    color: {text} !important;
+    font-family: 'DM Sans', sans-serif !important;
 }}
 .stApp {{ background: {bg} !important; }}
 .block-container {{ padding: 1.8rem 2.4rem 4rem !important; max-width: 1400px !important; }}
@@ -281,6 +292,99 @@ hr {{ border-color:{border} !important; margin:1rem 0 !important; }}
     border:1px solid {border2} !important;
     border-radius:8px !important;
 }}
+
+/* ─ FIX: generic st.markdown text (headings, paragraphs, lists) ─
+   Modern Streamlit no longer exposes [class*="css"] hooks, so plain
+   markdown/caption/code/file-uploader text was falling back to the
+   browser default instead of the theme color. Target elements by tag
+   (not *) so custom-colored spans/badges/divs are left untouched. */
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h4,
+[data-testid="stMarkdownContainer"] h5,
+[data-testid="stMarkdownContainer"] h6,
+[data-testid="stMarkdownContainer"] strong,
+[data-testid="stMarkdownContainer"] em,
+[data-testid="stMarkdownContainer"] td,
+[data-testid="stMarkdownContainer"] th,
+[data-testid="stMarkdownContainer"] blockquote {{
+    color: {text} !important;
+}}
+[data-testid="stMarkdownContainer"] a {{ color: {accent} !important; }}
+
+/* ─ Captions (st.caption) ─ */
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] * {{
+    color: {text2} !important;
+    opacity: 1 !important;
+}}
+
+/* ─ File uploader — inner text, icon, and Browse button ─ */
+[data-testid="stFileUploaderDropzone"] {{
+    background: {input_bg} !important;
+}}
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] div {{
+    color: {text} !important;
+}}
+[data-testid="stFileUploaderDropzoneInstructions"] small {{
+    color: {text3} !important;
+}}
+[data-testid="stFileUploaderDropzoneInstructions"] svg {{
+    fill: {text3} !important;
+}}
+[data-testid="stFileUploader"] section button,
+[data-testid="stBaseButton-secondary"] {{
+    background: {bg3} !important;
+    color: {text} !important;
+    border: 1px solid {border2} !important;
+}}
+[data-testid="stFileUploaderFile"],
+[data-testid="stFileUploaderFileName"] {{
+    color: {text} !important;
+}}
+[data-testid="stFileUploaderFileErrorMessage"] {{
+    color: #ef4444 !important;
+}}
+
+/* ─ Download button ─ */
+[data-testid="stDownloadButton"] > button {{
+    background:{accent} !important; color:#fff !important;
+    border:none !important; border-radius:9px !important;
+    font-weight:600 !important;
+}}
+
+/* ─ st.code / model summary block ─ */
+[data-testid="stCodeBlock"] pre,
+[data-testid="stCodeBlock"] code,
+[data-testid="stCodeBlock"] span {{
+    color: {text} !important;
+    background: transparent !important;
+}}
+[data-testid="stCodeBlock"] {{
+    background: {code_bg} !important;
+    border: 1px solid {border} !important;
+    border-radius: 8px !important;
+}}
+
+/* ─ Alerts (st.info / st.warning / st.error) ─ */
+[data-testid="stAlert"] {{
+    background: {card_bg} !important;
+    border: 1px solid {border2} !important;
+}}
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span,
+[data-testid="stAlert"] div {{
+    color: {text} !important;
+}}
+
+/* ─ Progress bar caption text ─ */
+[data-testid="stProgress"] + div, .stProgress p {{
+    color: {text2} !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -289,7 +393,9 @@ inject_css(st.session_state.dark_mode)
 # ── Constants ──────────────────────────────────────────────
 HISTORY_PATH = "prediction_history.csv"
 IMG_SIZE      = (224, 224)
-GRADCAM_LAYER = "conv5_block16_2_conv"
+# Final dense-block output of the DenseNet121 backbone (7x7 feature map) —
+# matches the layer used in the training/export notebook's Grad-CAM routine.
+GRADCAM_LAYER = "conv5_block16_concat"
 HISTORY_COLS = ["timestamp","filename","pneumonia_prob","normal_prob",
                 "threshold","prediction","confidence_level"]
 
@@ -421,8 +527,8 @@ with st.sidebar:
     st.markdown(f"""
     <div style="font-size:0.72rem; opacity:0.5; line-height:1.8; text-align:center;">
         BBIT, Kolkata &nbsp;·&nbsp; CSE (AI)<br>
-        PROJ-AI781 &nbsp;·&nbsp; Group 2<br>
-        Prof. Subhadeep Mazumdar
+        PROJ-AI881 &nbsp;·&nbsp; Project II &nbsp;·&nbsp; Project No. 60<br>
+        Prof. Subhadeep Majumdar
     </div>
     <div style="margin-top:1rem; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2);
                 border-radius:8px; padding:9px 11px; font-size:0.72rem; color:#f87171; line-height:1.6;">
@@ -441,7 +547,7 @@ st.markdown(f"""
         </div>
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
-        <span class="nav-badge nav-badge-blue">Custom CNN</span>
+        <span class="nav-badge nav-badge-blue">DenseNet121 · Transfer Learning</span>
         <span class="nav-badge">Grad-CAM</span>
     </div>
 </div>
@@ -840,17 +946,23 @@ with tab4:
     m1, m2 = st.columns(2, gap="large")
 
     with m1:
-        st.markdown("#### Architecture — Custom CNN")
+        st.markdown("#### Architecture — DenseNet121 (Transfer Learning)")
+        st.caption("Upgraded in the 8th-semester phase from the custom, shallow CNN used in the 7th-semester baseline.")
         arch_rows = [
-            ("Base Model",       "DenseNet121 (pretrained backbone)"),
-            ("Dense Blocks",     "4 blocks (6, 12, 24, 16 layers)"),
-            ("Global AvgPool",   "(None, 1024)"),
-            ("Dense Head",       "Dense(256) → BN → Dropout → Dense(1)"),
+            ("Base Model",       "DenseNet121 (ImageNet-pretrained, include_top=False)"),
+            ("Backbone Weights", "Frozen during head training (feature extractor)"),
+            ("Dense Blocks",     "4 blocks (6, 12, 24, 16 layers) with dense connectivity"),
+            ("Global AvgPool",   "GlobalAveragePooling2D → (None, 1024)"),
+            ("Dense Head",       "Dense(256, ReLU) → BatchNorm → Dropout(0.5) → Dense(1, Sigmoid)"),
             ("Input Size",       "224 × 224 × 3 RGB"),
             ("Output",           "P(Pneumonia) via Sigmoid"),
             ("Loss",             "Binary Cross-Entropy"),
-            ("Optimizer",        "Adam (LR = 0.001)"),
-            ("Grad-CAM Target",  "conv5_block16_2_conv (7×7)"),
+            ("Optimizer",        "Adam (LR = 0.0001)"),
+            ("Metrics Tracked",  "Accuracy, Precision, Recall, AUC"),
+            ("Data Augmentation","Rotation ±10°, Zoom 0.1, Horizontal Flip"),
+            ("Batch Size",       "8"),
+            ("Training",         "Up to 20 epochs with EarlyStopping (patience = 3, restore best weights)"),
+            ("Grad-CAM Target",  "conv5_block16_concat (7×7 feature map)"),
         ]
         for k, v in arch_rows:
             st.markdown(
@@ -868,14 +980,19 @@ with tab4:
         **Kaggle — Chest X-Ray Images (Pneumonia)**
 
         Real clinical X-rays organised into train / val / test splits,
-        each with NORMAL and PNEUMONIA sub-folders.
-        Widely used benchmark for medical imaging classification research.
+        each with NORMAL and PNEUMONIA sub-folders. For this phase, the
+        training set is passed through an augmentation pipeline (rotation,
+        zoom, horizontal flip) to increase effective sample diversity and
+        reduce the impact of class imbalance between the Normal and
+        Pneumonia categories. Widely used benchmark for medical imaging
+        classification research.
         """)
 
     with m2:
         st.markdown("#### How Grad-CAM Works")
         st.markdown("""
-        `conv5_block16_2_conv` produces a **7×7 feature map** — each cell covers roughly
+        `conv5_block16_concat` — the output of DenseNet121's final dense
+        block — produces a **7×7 feature map**, where each cell covers roughly
         a 32×32 pixel area of the original 224×224 X-ray.
 
         Grad-CAM computes the gradient of the output neuron with respect to
@@ -903,29 +1020,34 @@ with tab5:
         st.markdown('<div class="sec-label">Project Overview</div>', unsafe_allow_html=True)
         sections = {
             "Problem Statement":
-                "Pneumonia is a leading cause of mortality worldwide. Manual X-ray "
-                "interpretation is time-intensive and prone to variability. This project "
-                "automates preliminary screening using a custom CNN model.",
+                "Computer Vision and Deep Learning for Early Disease Diagnosis and "
+                "Prediction.<br><br>"
+                "Pneumonia is a leading cause of mortality worldwide, and "
+                "manual X-ray interpretation is time-intensive and prone to variability. "
+                "This project automates preliminary screening using a DenseNet121-based "
+                "transfer-learning model, upgraded in this phase from the shallow custom "
+                "CNN used in the 7th-semester baseline.",
             "Motivation":
                 "Deep learning provides fast, consistent screening support. This system "
                 "reduces diagnostic delays in high-volume settings and serves as an "
-                "educational research tool for medical AI.",
+                "educational research tool for medical AI and explainable deep learning.",
             "Objective":
-                "Build a CNN-based binary classification system, deploy via an accessible "
-                "web interface, and provide interpretable Grad-CAM heatmaps pinpointing "
-                "regions of interest in each X-ray.",
+                "Fine-tune a DenseNet121 backbone (pretrained on ImageNet) for binary "
+                "pneumonia classification, deploy it via an accessible web interface, and "
+                "provide interpretable Grad-CAM heatmaps pinpointing regions of interest "
+                "in each X-ray.",
             "Key Features":
-                "Grad-CAM heatmap visualisation · Batch multi-image analysis · "
-                "Prediction history with analytics · Confidence level scoring · "
-                "Light and dark mode · 120×120 custom CNN · CSV export.",
+                "DenseNet121 transfer-learning model (224×224 input) · Grad-CAM heatmap "
+                "visualisation · Batch multi-image analysis · Prediction history with "
+                "analytics · Confidence level scoring · Light and dark mode · CSV export.",
             "Limitations":
                 "Not validated for clinical use. Dataset imbalance may affect rare "
                 "presentations. Grad-CAM provides approximate, not pixel-precise, "
                 "localisation.",
             "Future Work":
-                "Multi-disease detection (COVID-19, TB, pleural effusion) · "
-                "DenseNet/EfficientNet upgrade · DICOM support · REST API backend · "
-                "Confidence calibration.",
+                "Multi-disease detection (COVID-19, TB, pleural effusion) · benchmarking "
+                "against EfficientNet/ResNet50 backbones · fine-tuning deeper DenseNet121 "
+                "layers · DICOM support · REST API backend · confidence calibration.",
         }
         for title, content in sections.items():
             st.markdown(
@@ -941,8 +1063,9 @@ with tab5:
             <table style="width:100%; font-size:0.81rem; border-collapse:collapse;">
         """, unsafe_allow_html=True)
         for k, v in [("Institute","BBIT, Kolkata"),("Department","CSE — Artificial Intelligence"),
-                      ("Course","PROJ-AI781 · Project 1"),("Group","Group 2"),
-                      ("Supervisor","Prof. Subhadeep Mazumdar")]:
+                      ("Project Code","PROJ-AI881"),("Phase","Project II · 8th Semester"),
+                      ("Project No.","60"),
+                      ("Supervisor","Prof. Subhadeep Majumdar")]:
             st.markdown(
                 f"<tr><td style='padding:5px 0; opacity:0.45; width:45%;'>{k}</td>"
                 f"<td style='padding:5px 0; font-weight:600;'>{v}</td></tr>",
@@ -971,7 +1094,7 @@ with tab5:
 
         # Tech stack
         st.markdown('<div class="card" style="margin-top:0.9rem;"><div class="sec-label">Tech Stack</div><div style="margin-top:4px;">', unsafe_allow_html=True)
-        for t in ["TensorFlow 2.x","Custom CNN","Streamlit","OpenCV",
+        for t in ["TensorFlow 2.x","DenseNet121","Transfer Learning","Streamlit","OpenCV",
                   "Grad-CAM","NumPy","Pandas","Matplotlib","Pillow"]:
             st.markdown(f'<span class="chip">{t}</span>', unsafe_allow_html=True)
         st.markdown("</div></div>", unsafe_allow_html=True)
